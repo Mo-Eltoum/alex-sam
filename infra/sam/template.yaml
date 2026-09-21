@@ -1,0 +1,560 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Alex Lambdas — ingest, agents, API, researcher, scheduler
+
+Parameters:
+  AuroraClusterArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/aurora_cluster_arn
+  AuroraSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/aurora_secret_arn
+  DatabaseName:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/database_name
+  VectorBucket:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/vector_bucket
+  SageMakerEndpoint:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/sagemaker_endpoint
+  IngestApiKey:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/ingest_api_key
+  ClerkJwksUrl:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/clerk_jwks_url
+  ClerkIssuer:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/clerk_issuer
+  BedrockRegion:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/bedrock_region
+  BedrockModelId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/bedrock_model_id
+  PlatformRegion:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /alex/aws_region
+  OpenAIApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+  PolygonApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+  PolygonPlan:
+    Type: String
+    Default: free
+  LangfusePublicKey:
+    Type: String
+    Default: ""
+  LangfuseSecretKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+  LangfuseHost:
+    Type: String
+    Default: https://cloud.langfuse.com
+  ResearcherModel:
+    Type: String
+    Default: bedrock/eu.amazon.nova-pro-v1:0
+  SchedulerEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  HasOpenAI: !Not [!Equals [!Ref OpenAIApiKey, ""]]
+  SchedulerOn: !Equals [!Ref SchedulerEnabled, "true"]
+
+Globals:
+  Function:
+    Architectures:
+      - x86_64
+    Tracing: Active
+    Environment:
+      Variables:
+        DEFAULT_AWS_REGION: !Ref PlatformRegion
+        AWS_REGION_NAME: !Ref BedrockRegion
+        AURORA_CLUSTER_ARN: !Ref AuroraClusterArn
+        AURORA_SECRET_ARN: !Ref AuroraSecretArn
+        AURORA_DATABASE: !Ref DatabaseName
+        DATABASE_NAME: !Ref DatabaseName
+        VECTOR_BUCKET: !Ref VectorBucket
+        SAGEMAKER_ENDPOINT: !Ref SageMakerEndpoint
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_REGION: !Ref BedrockRegion
+        INDEX_NAME: financial-research
+        LANGFUSE_HOST: !Ref LangfuseHost
+        LANGFUSE_PUBLIC_KEY: !Ref LangfusePublicKey
+        LANGFUSE_SECRET_KEY: !Ref LangfuseSecretKey
+        OPENAI_API_KEY: !Ref OpenAIApiKey
+
+Resources:
+  AlexHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+
+  HttpApiUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /alex/http_api_url
+      Type: String
+      Value: !Sub "https://${AlexHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  SqsUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /alex/sqs_queue_url
+      Type: String
+      Value: !Ref AnalysisQueue
+
+  AlexDepsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: alex-common-deps
+      Description: openai-agents, litellm, FastAPI, boto3
+      ContentUri: layer/
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.12
+      BuildArchitecture: x86_64
+
+  AlexDbLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: alex-database
+      Description: alex-database package as /opt/python/src
+      ContentUri: layer-db/
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Delete
+
+  AnalysisQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: alex-analysis-jobs
+      VisibilityTimeout: 910
+      MessageRetentionPeriod: 86400
+      ReceiveMessageWaitTimeSeconds: 10
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AnalysisDlq.Arn
+        maxReceiveCount: 3
+
+  AnalysisDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: alex-analysis-jobs-dlq
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-ingest
+      Runtime: python3.12
+      CodeUri: ../../backend/ingest
+      Handler: ingest_s3vectors.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Environment:
+        Variables:
+          ALEX_API_KEY: !Ref IngestApiKey
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sagemaker:InvokeEndpoint
+              Resource: !Sub arn:aws:sagemaker:${PlatformRegion}:${AWS::AccountId}:endpoint/${SageMakerEndpoint}
+            - Effect: Allow
+              Action:
+                - s3vectors:PutVectors
+                - s3vectors:QueryVectors
+                - s3vectors:GetVectors
+                - s3vectors:DeleteVectors
+              Resource: !Sub arn:aws:s3vectors:${PlatformRegion}:${AWS::AccountId}:bucket/${VectorBucket}/index/*
+      Events:
+        IngestPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /ingest
+            Method: POST
+
+  TaggerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-tagger
+      Runtime: python3.12
+      CodeUri: ../../backend/tagger
+      Handler: lambda_handler.lambda_handler
+      Timeout: 300
+      MemorySize: 1024
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+
+  ReporterFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-reporter
+      Runtime: python3.12
+      CodeUri: ../../backend/reporter
+      Handler: lambda_handler.lambda_handler
+      Timeout: 300
+      MemorySize: 1024
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action:
+                - s3vectors:QueryVectors
+                - s3vectors:GetVectors
+              Resource: !Sub arn:aws:s3vectors:${PlatformRegion}:${AWS::AccountId}:bucket/${VectorBucket}/index/*
+            - Effect: Allow
+              Action: sagemaker:InvokeEndpoint
+              Resource: !Sub arn:aws:sagemaker:${PlatformRegion}:${AWS::AccountId}:endpoint/${SageMakerEndpoint}
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+
+  CharterFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-charter
+      Runtime: python3.12
+      CodeUri: ../../backend/charter
+      Handler: lambda_handler.lambda_handler
+      Timeout: 300
+      MemorySize: 1024
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+
+  RetirementFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-retirement
+      Runtime: python3.12
+      CodeUri: ../../backend/retirement
+      Handler: lambda_handler.lambda_handler
+      Timeout: 300
+      MemorySize: 1024
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+
+  PlannerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-planner
+      Runtime: python3.12
+      CodeUri: ../../backend/planner
+      Handler: lambda_handler.lambda_handler
+      Timeout: 900
+      MemorySize: 2048
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Environment:
+        Variables:
+          TAGGER_FUNCTION: !Ref TaggerFunction
+          REPORTER_FUNCTION: !Ref ReporterFunction
+          CHARTER_FUNCTION: !Ref CharterFunction
+          RETIREMENT_FUNCTION: !Ref RetirementFunction
+          POLYGON_API_KEY: !Ref PolygonApiKey
+          POLYGON_PLAN: !Ref PolygonPlan
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - SQSPollerPolicy:
+            QueueName: !GetAtt AnalysisQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt TaggerFunction.Arn
+                - !GetAtt ReporterFunction.Arn
+                - !GetAtt CharterFunction.Arn
+                - !GetAtt RetirementFunction.Arn
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+      Events:
+        SQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AnalysisQueue.Arn
+            BatchSize: 1
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-api
+      Runtime: python3.12
+      CodeUri: ../../backend/api
+      Handler: lambda_handler.handler
+      Timeout: 30
+      MemorySize: 512
+      Layers:
+        - !Ref AlexDepsLayer
+        - !Ref AlexDbLayer
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref AnalysisQueue
+          CLERK_JWKS_URL: !Ref ClerkJwksUrl
+          CLERK_ISSUER: !Ref ClerkIssuer
+          CORS_ORIGINS: "*"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt AnalysisQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !Ref AuroraClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AuroraSecretArn
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt PlannerFunction.Arn
+                - !GetAtt TaggerFunction.Arn
+                - !GetAtt ReporterFunction.Arn
+                - !GetAtt CharterFunction.Arn
+                - !GetAtt RetirementFunction.Arn
+      Events:
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /api/{proxy+}
+            Method: ANY
+        Options:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /api/{proxy+}
+            Method: OPTIONS
+
+  ResearcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: alex-researcher
+      PackageType: Image
+      MemorySize: 2048
+      Timeout: 300
+      EphemeralStorage:
+        Size: 2048
+      Environment:
+        Variables:
+          ALEX_API_KEY: !Ref IngestApiKey
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/alex/http_api_url
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - arn:aws:bedrock:*:*:inference-profile/*
+      Events:
+        Research:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /research
+            Method: POST
+        ResearchAuto:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /research/auto
+            Method: GET
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AlexHttpApi
+            Path: /health
+            Method: GET
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../../backend/researcher
+      Dockerfile: Dockerfile
+
+  SchedulerFunction:
+    Type: AWS::Serverless::Function
+    Condition: SchedulerOn
+    Metadata:
+      SkipBuild: true
+    Properties:
+      FunctionName: alex-researcher-scheduler
+      Runtime: python3.12
+      CodeUri: ../../backend/scheduler
+      Handler: lambda_function.handler
+      Timeout: 180
+      MemorySize: 256
+      Environment:
+        Variables:
+          ALEX_API_KEY: !Ref IngestApiKey
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/alex/http_api_url
+      Events:
+        EverySixHours:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Enabled: true
+
+Outputs:
+  HttpApiUrl:
+    Value: !Sub "https://${AlexHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  SqsQueueUrl:
+    Value: !Ref AnalysisQueue
+  IngestFunction:
+    Value: !Ref IngestFunction
+  PlannerFunction:
+    Value: !Ref PlannerFunction
