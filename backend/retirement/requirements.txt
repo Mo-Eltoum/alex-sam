@@ -1,0 +1,1 @@
+# deps live in SAM layers; this file exists so sam build zips sources only

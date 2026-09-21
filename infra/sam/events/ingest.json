@@ -1,0 +1,17 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /ingest",
+  "rawPath": "/ingest",
+  "headers": {
+    "content-type": "application/json",
+    "x-api-key": "local-dev-key"
+  },
+  "requestContext": {
+    "http": {
+      "method": "POST",
+      "path": "/ingest"
+    }
+  },
+  "body": "{\"text\": \"NVIDIA earnings and AI chip demand\", \"metadata\": {\"source\": \"sam-local\", \"category\": \"test\"}}",
+  "isBase64Encoded": false
+}

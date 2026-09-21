@@ -1,0 +1,18 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "alex-sam"
+region = "eu-west-1"
+
+[default.build.parameters]
+use_container = true
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+parameter_overrides = "AuroraClusterArn=\"/alex/aurora_cluster_arn\" AuroraSecretArn=\"/alex/aurora_secret_arn\" DatabaseName=\"/alex/database_name\" VectorBucket=\"/alex/vector_bucket\" SageMakerEndpoint=\"/alex/sagemaker_endpoint\" IngestApiKey=\"/alex/ingest_api_key\" ClerkJwksUrl=\"/alex/clerk_jwks_url\" ClerkIssuer=\"/alex/clerk_issuer\" BedrockRegion=\"/alex/bedrock_region\" BedrockModelId=\"/alex/bedrock_model_id\" PlatformRegion=\"/alex/aws_region\" PolygonPlan=\"free\" LangfusePublicKey=\"\" LangfuseHost=\"https://cloud.langfuse.com\" ResearcherModel=\"bedrock/eu.amazon.nova-pro-v1:0\" SchedulerEnabled=\"true\""
+s3_prefix = "alex-sam"
+disable_rollback = true
