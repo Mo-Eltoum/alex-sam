@@ -54,23 +54,6 @@ cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
 
 Fill `aws_region`, Clerk URLs, Bedrock model, Polygon/OpenAI/LangFuse as needed.
 
-### Destroy the course stack first
-
-From the **course** repo, reverse order. Confirm the console is empty of `alex-aurora-cluster`, `alex-planner`, and the old CloudFront distribution before continuing.
-
-```bash
-# course repo
-cd terraform/8_enterprise && terraform destroy
-cd ../7_frontend && terraform destroy
-cd ../6_agents && terraform destroy
-cd ../5_database && terraform destroy   # biggest cost
-cd ../4_researcher && terraform destroy
-cd ../3_ingestion && terraform destroy
-cd ../2_sagemaker && terraform destroy
-```
-
-If destroy hangs: delete the SageMaker endpoint, empty S3 buckets, delete ECR images, then retry.
-
 ---
 
 
