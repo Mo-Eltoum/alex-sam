@@ -1,6 +1,6 @@
 # Alex SAM
 
-Alex (Agentic Learning Equities eXplainer) is a multi-agent financial planner. This repo is a production-style rebuild of [Alex](https://github.com/ed-donner/alex) by [Ed Donner](https://github.com/ed-donner), the capstone for his Udemy course *AI in Production*. The original repository holds the course guides, the seven Terraform directories, and the MIT license this code is derived from. A longer comparison is in [course-vs-sam.md](course-vs-sam.md).
+Alex (Agentic Learning Equities eXplainer) is a multi-agent financial planner. This repo is a production-style rebuild of [Alex](https://github.com/ed-donner/alex) by [Ed Donner](https://github.com/ed-donner), the capstone for his Udemy course *AI in Production*. The original repository holds the course guides, the seven Terraform directories, and the MIT license this code is derived from. A longer comparison is in [course-vs-sam.md](course-vs-sam.md). How the agents call each other is in [agents-architecture.md](agents-architecture.md).
 
 This rebuild uses **one Terraform root** for platform services, **AWS SAM** for every Lambda, and **SSM** to wire them together. No hand-copied ARNs between directories.
 
